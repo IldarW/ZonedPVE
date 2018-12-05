@@ -14,7 +14,6 @@ import org.gotti.wurmunlimited.modloader.interfaces.ServerStartedListener;
 import org.gotti.wurmunlimited.modloader.interfaces.WurmServerMod;
 
 import javax.imageio.ImageIO;
-import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.util.Properties;
@@ -22,19 +21,21 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerStartedListener {
-    public static boolean debug;
-    public static final Logger logger = Logger.getLogger(ZonedPVE.class.getSimpleName());
     private static final String VERSION = "1.0";
+    static boolean debugMode;
+    static final Logger logger = Logger.getLogger(ZonedPVE.class.getSimpleName());
     private static ZoneMap map;
-    private static boolean initialized;
-    private String pvpSchedule;
 
+    public static ZoneMap getMap() {
+        return map;
+    }
 
     @Override
     public void configure(Properties properties) {
-        debug = Boolean.parseBoolean(properties.getProperty("debug", "false"));
-        pvpSchedule = properties.getProperty("pvpschedule");
-        if (debug) {
+        debugMode = Boolean.parseBoolean(properties.getProperty("debug", "false"));
+        map = new ZoneMap();
+        map.setPvpSchedule(properties.getProperty("pvpschedule"));
+        if (debugMode) {
             for(Zone zone : Zone.values())
                 logger.info("The color of zone " + zone.name() + " is " + zone.getColor());
         }
@@ -45,7 +46,7 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
     public void init() {
         try {
             BufferedImage img = ImageIO.read(new File("./mods/" + ZonedPVE.class.getSimpleName() + "/map.bmp"));
-            map = new ZoneMap(img);
+            map.setMap(img);
             HookManager.getInstance().getClassPool().insertClassPath(new ClassClassPath(ZonedPVE.class));
             AddCombatEngineHook();
             AddArcheryHook();
@@ -53,14 +54,17 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
             AddRiteOfDeathHook();
             AddScornOfLibilaHook();
             AddCatapultHook();
-            if (pvpSchedule != null)
-                map.setPvpSchedule(pvpSchedule);
-            initialized = true;
             logger.info("Initialization is complete");
         } catch (Exception e) {
             logger.log(Level.SEVERE, "Couldn't initialize the mod", e);
-            initialized = false;
         }
+    }
+
+    private void alertPve(Creature creature, boolean performer) {
+        if (performer)
+            creature.getCommunicator().sendAlertServerMessage("You are in PvE zone");
+        else
+            creature.getCommunicator().sendAlertServerMessage("The target is in PvE zone");
     }
 
     private void AddCatapultHook() {
@@ -69,11 +73,13 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
                 "(Lcom/wurmonline/server/behaviours/Action;Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/items/Item;)V",
                 () -> ((proxy, method, args) -> {
                     Creature performer = (Creature) args[1];
-                    if (creatureInPve(performer, true))
+                    if (map.isPve(performer)) {
+                        alertPve(performer, true);
                         return null;
-                    Item item = (Item) args[2];
-                    if (itemInPve(item)) {
-                        performer.getCommunicator().sendAlertServerMessage("The target is in PVE zone");
+                    }
+                    if (map.isPve((Item) args[2])) {
+                        alertPve(performer, false);
+                        return null;
                     }
                     return method.invoke(proxy, args);
                 }));
@@ -86,7 +92,7 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
             @Override
             public void edit(MethodCall m) throws CannotCompileException {
                 if (m.getMethodName().equals("addWoundOfType")) {
-                    m.replace("{ if(!net.ildar.wurm.ZonedPVE#creatureInPve($0, false)) $_ = $proceed($$); }");
+                    m.replace("{ if(!net.ildar.wurm.ZonedPVE.getMap().isPve($0)) $_ = $proceed($$); }");
                 }
             }
         });
@@ -99,7 +105,7 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
             @Override
             public void edit(MethodCall m) throws CannotCompileException {
                 if (m.getMethodName().equals("addWoundOfType")) {
-                    m.replace("{ if(!net.ildar.wurm.ZonedPVE#creatureInPve($0, false)) $_ = $proceed($$); }");
+                    m.replace("{ if(!net.ildar.wurm.ZonedPVE.getMap().isPve($0)) $_ = $proceed($$); }");
                 }
             }
         });
@@ -114,12 +120,13 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
                         spell.methodSignature,
                         () -> ((proxy, method, args) -> {
                             Creature performer = (Creature) args[1];
-                            if (creatureInPve(performer, true))
+                            if (map.isPve(performer)) {
+                                alertPve(performer, true);
                                 return false;
+                            }
                             if (args[2] instanceof Creature) {
-                                Creature target = (Creature) args[2];
-                                if (creatureInPve(target, false)) {
-                                    performer.getCommunicator().sendNormalServerMessage("The target is in PVE zone");
+                                if (map.isPve((Creature) args[2])) {
+                                    alertPve(performer, false);
                                     return false;
                                 }
                             }
@@ -131,12 +138,13 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
                         spell.methodSignature,
                         () -> ((proxy, method, args) -> {
                             Creature performer = (Creature) args[2];
-                            if (creatureInPve(performer, true))
+                            if (map.isPve(performer)) {
+                                alertPve(performer, true);
                                 return null;
+                            }
                             if (args[3] instanceof Creature) {
-                                Creature target = (Creature) args[3];
-                                if (creatureInPve(target, false)) {
-                                    performer.getCommunicator().sendAlertServerMessage("The target is in PVE zone");
+                                if (map.isPve((Creature) args[3])) {
+                                    alertPve(performer, false);
                                     return null;
                                 }
                             }
@@ -151,16 +159,15 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
                 "attack",
                 "(Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/items/Item;FLcom/wurmonline/server/behaviours/Action;)Z",
                 () -> ((proxy, method, args) -> {
-                    if (initialized) {
-                        Creature performer = (Creature) args[0];
-                        Creature defender = (Creature) args[1];
-                        if (creatureInPve(performer, true)) {
-                            return true;
-                        }
-                        if (creatureInPve(defender, false)) {
-                            performer.getCommunicator().sendAlertServerMessage("The target is in PVE zone");
-                            return true;
-                        }
+                    Creature performer = (Creature) args[0];
+                    Creature defender = (Creature) args[1];
+                    if (map.isPve(performer)) {
+                        alertPve(performer, true);
+                        return true;
+                    }
+                    if (map.isPve(defender)) {
+                        alertPve(performer, false);
+                        return true;
                     }
                     return method.invoke(proxy, args);
                 }));
@@ -171,44 +178,24 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
                 "attack",
                 "(Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/creatures/Creature;IILcom/wurmonline/server/behaviours/Action;)Z",
                 () -> ((proxy, method, args) -> {
-                    if (initialized) {
-                        Creature performer = (Creature) args[0];
-                        Creature defender = (Creature) args[1];
-                        boolean isPve = creatureInPve(performer, true) || creatureInPve(defender, true);
-                        if (isPve) {
-                            performer.setOpponent(null);
-                            return true;
-                        }
+                    Creature performer = (Creature) args[0];
+                    Creature defender = (Creature) args[1];
+                    boolean isPve = false;
+                    if (map.isPve(performer)) {
+                        alertPve(performer, true);
+                        isPve = true;
+                    }
+                    if (map.isPve(defender)) {
+                        alertPve(performer, false);
+                        isPve = true;
+                    }
+                    if (isPve) {
+                        performer.setOpponent(null);
+                        return true;
                     }
                     return method.invoke(proxy, args);
                 }));
     }
-
-    @SuppressWarnings("WeakerAccess")
-    public static boolean creatureInPve(Creature creature, boolean alert) {
-        if (!initialized)
-            return false;
-        Zone creatureZone = map.getZone(creature);
-        if (creatureZone != Zone.PVP)
-            if (map.isPVE(creature, creatureZone)) {
-                if (alert)
-                    creature.getCommunicator().sendAlertServerMessage(creatureZone.getDescription());
-                return true;
-            }
-        return false;
-    }
-
-    @SuppressWarnings("WeakerAccess")
-    public static boolean itemInPve(Item item) {
-        if (!initialized)
-            return false;
-        Zone itemZone = map.getZone(item);
-        if (itemZone != Zone.PVP)
-            return map.isPVE(item, itemZone);
-        return false;
-    }
-
-
 
     @Override
     public String getVersion() {
@@ -217,59 +204,14 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
 
     @Override
     public void onServerStarted() {
-        if (initialized && map != null) {
-            try {
-                map.validate();
-            } catch (Exception e) {
-                logger.log(Level.SEVERE, "Invalid map", e);
-                initialized = false;
-            }
+        try {
+            map.validate();
+        } catch (Exception e) {
+            logger.log(Level.SEVERE, "Invalid map", e);
         }
     }
 
-    public enum Zone {
-        /**
-         * Всегда ПВЕ
-         */
-        PVE(new Color(0, 255, 0), "You are in PVE zone"),
-
-        /**
-         * Всегда ПВП
-         */
-        PVP(new Color(255, 0, 0), "You are in PVP zone"),
-
-        /**
-         * ПВП включается в судную ночь, но обычно ПВЕ
-         */
-        TimedPvp(new Color(255, 255, 0), "It is PVP time in the deed"),
-
-        /**
-         * ПВЕ в поселениях, но обычно ПВП
-         */
-        PveOnDeeds(new Color(255, 128, 128), "You are in PVE zone on deed"),
-
-        /**
-         * Обычно ПВП, кроме поселений. ПВП в поселениях по расписанию
-         */
-        TimedPveOnDeeds(new Color(255, 128, 0), "You are in PVE zone on deed");
-
-        private int color;
-        private String description;
-
-        Zone(Color color, String description) {
-            this.color = color.getRGB();
-            this.description = description;
-        }
-
-        public int getColor() {
-            return this.color;
-        }
-
-        public String getDescription() {
-            return description;
-        }
-    }
-
+    @SuppressWarnings("unused")
     public enum Spell{
         DrainHealth(false, "(Lcom/wurmonline/server/skills/Skill;DLcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/creatures/Creature;)V"),
         DrainStamina(true, "(Lcom/wurmonline/server/skills/Skill;Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/creatures/Creature;)Z"),
