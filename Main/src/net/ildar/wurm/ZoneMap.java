@@ -15,6 +15,7 @@ import java.time.ZonedDateTime;
 
 import static com.cronutils.model.CronType.UNIX;
 import static net.ildar.wurm.ZonedPVE.debugMode;
+import static net.ildar.wurm.ZonedPVE.logger;
 
 public class ZoneMap {
     private BufferedImage map;
@@ -52,13 +53,12 @@ public class ZoneMap {
         return isPVE(creature.getName(), creature.getCurrentVillage(), zone);
     }
 
-    public boolean isPve(Item item) {
-        if (!initialized || item == null)
+    public boolean isPve(int x, int y, boolean onSurface) {
+        if (!initialized) {
             return false;
-        float x = item.getPosX();
-        float y = item.getPosY();
-        Zone zone = getZone(x, y);
-        return isPVE(item.getName(), Zones.getVillage((int) (x / 4), (int) (y / 4), item.isOnSurface()), zone);
+        }
+        Zone zone = getZone(x*4+2, y*4+2);
+        return isPVE(String.format("[%d,%d]", x, y), Zones.getVillage(x, y, onSurface), zone);
     }
 
 
@@ -67,7 +67,7 @@ public class ZoneMap {
         int tileY = (int) (y / 4);
         int color = map.getRGB(tileX, tileY);
         if (debugMode)
-            ZonedPVE.logger.info(String.format("The color of tile [%d, %d] is %d", tileX, tileY, color));
+            logger.info(String.format("The color of tile [%d, %d] is %d", tileX, tileY, color));
         for (Zone zone : Zone.values())
             if (zone.getColor() == color)
                 return zone;
@@ -77,27 +77,27 @@ public class ZoneMap {
     private boolean isPVE(String name, Village village, Zone zone) {
         if (zone == Zone.PVE) {
             if (debugMode)
-                ZonedPVE.logger.info(name + " is in PvE zone");
+                logger.info(name + " is in PvE zone");
             return true;
         }
         if (zone == Zone.PveOnDeeds) {
             if (village != null && debugMode)
-                ZonedPVE.logger.info(name + " is in PvE zone inside " + village.getName());
+                logger.info(name + " is in PvE zone inside " + village.getName());
             return village != null;
         }
         if (zone == Zone.TimedPvp) {
             boolean pvpTime = pvpSchedule != null && pvpSchedule.isMatch(ZonedDateTime.now());
             if (pvpTime && debugMode)
-                ZonedPVE.logger.info(name + " is in PvE zone, but it is PvP based on the schedule - " + pvpScheduleDescription);
+                logger.info(name + " is in PvE zone, but it is PvP based on the schedule - " + pvpScheduleDescription);
             return pvpTime;
         }
         if (zone == Zone.TimedPveOnDeeds) {
             if (village != null) {
                 boolean pvpTime = pvpSchedule != null && pvpSchedule.isMatch(ZonedDateTime.now());
                 if (pvpTime && debugMode)
-                    ZonedPVE.logger.info(name + " is inside " + village.getName() + " but it is PvP based on the schedule - " + pvpScheduleDescription);
+                    logger.info(name + " is inside " + village.getName() + " but it is PvP based on the schedule - " + pvpScheduleDescription);
                 if (!pvpTime && debugMode)
-                    ZonedPVE.logger.info(name + " is in PvE zone inside " + village.getName());
+                    logger.info(name + " is in PvE zone inside " + village.getName());
                 return !pvpTime;
             }
         }

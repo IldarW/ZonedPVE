@@ -1,53 +1,49 @@
 package net.ildar.wurm;
 
+import com.wurmonline.math.Vector3f;
+import com.wurmonline.server.combat.ServerProjectile;
 import com.wurmonline.server.creatures.Creature;
-import com.wurmonline.server.items.Item;
 import javassist.CannotCompileException;
-import javassist.ClassClassPath;
+import javassist.CtClass;
 import javassist.CtMethod;
 import javassist.expr.ExprEditor;
 import javassist.expr.MethodCall;
 import org.gotti.wurmunlimited.modloader.classhooks.HookManager;
 import org.gotti.wurmunlimited.modloader.interfaces.Configurable;
-import org.gotti.wurmunlimited.modloader.interfaces.Initable;
+import org.gotti.wurmunlimited.modloader.interfaces.PreInitable;
 import org.gotti.wurmunlimited.modloader.interfaces.ServerStartedListener;
 import org.gotti.wurmunlimited.modloader.interfaces.WurmServerMod;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.File;
+import java.lang.reflect.Field;
 import java.util.Properties;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerStartedListener {
+public class ZonedPVE implements WurmServerMod, PreInitable, Configurable, ServerStartedListener {
     private static final String VERSION = "1.0";
     static boolean debugMode;
     static final Logger logger = Logger.getLogger(ZonedPVE.class.getSimpleName());
-    private static ZoneMap map;
-
-    public static ZoneMap getMap() {
-        return map;
-    }
+    private static ZoneMap map = new ZoneMap();
 
     @Override
     public void configure(Properties properties) {
         debugMode = Boolean.parseBoolean(properties.getProperty("debug", "false"));
-        map = new ZoneMap();
         map.setPvpSchedule(properties.getProperty("pvpschedule"));
         if (debugMode) {
-            for(Zone zone : Zone.values())
+            for (Zone zone : Zone.values())
                 logger.info("The color of zone " + zone.name() + " is " + zone.getColor());
         }
     }
 
 
     @Override
-    public void init() {
+    public void preInit() {
         try {
             BufferedImage img = ImageIO.read(new File("./mods/" + ZonedPVE.class.getSimpleName() + "/map.bmp"));
             map.setMap(img);
-            HookManager.getInstance().getClassPool().insertClassPath(new ClassClassPath(ZonedPVE.class));
             AddCombatEngineHook();
             AddArcheryHook();
             AddSpellHooks();
@@ -60,7 +56,8 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
         }
     }
 
-    private void alertPve(Creature creature, boolean performer) {
+    @SuppressWarnings("WeakerAccess")
+    public void alertPve(Creature creature, boolean performer) {
         if (performer)
             creature.getCommunicator().sendAlertServerMessage("You are in PvE zone");
         else
@@ -77,42 +74,77 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
                         alertPve(performer, true);
                         return null;
                     }
-                    if (map.isPve((Item) args[2])) {
-                        alertPve(performer, false);
-                        return null;
-                    }
                     return method.invoke(proxy, args);
                 }));
+        HookManager.getInstance().registerHook("com.wurmonline.server.combat.ServerProjectile",
+                "fire",
+                "(Z)Z",
+                () -> (((proxy, method, args) -> {
+                    ServerProjectile projectile = (ServerProjectile) proxy;
+                    if (map.isPve((int) (projectile.getPosDownX() / 4), (int) (projectile.getPosDownY() / 4), true)) {
+                        alertPve(projectile.getShooter(), false);
+                        return false;
+                    }
+                    return method.invoke(proxy, args);
+                })));
+        HookManager.getInstance().registerHook("com.wurmonline.server.combat.ServerProjectile",
+                "poll",
+                "(J)Z",
+                () -> (((proxy, method, args) -> {
+                    ServerProjectile projectile = (ServerProjectile) proxy;
+                    long now = (long) args[0];
+                    if (now > projectile.getTimeAtLanding()) {
+                        Field projectileInfoField = ServerProjectile.class.getDeclaredField("projectileInfo");
+                        projectileInfoField.setAccessible(true);
+                        Object projectileInfo = projectileInfoField.get(projectile);
+                        Field endPositionField = projectileInfo.getClass().getField("endPosition");
+                        endPositionField.setAccessible(true);
+                        Vector3f endPosition = (Vector3f) endPositionField.get(projectileInfo);
+                        if (map.isPve((int) (endPosition.x / 4), (int) (endPosition.y / 4), true)) {
+                            alertPve(projectile.getShooter(), false);
+                            return true;
+                        }
+                    }
+                    return method.invoke(proxy, args);
+                })));
     }
 
-    private void AddScornOfLibilaHook() throws Exception{
-        CtMethod doEffectMethod = HookManager.getInstance().getClassPool().get("com.wurmonline.server.spells.ScornOfLibila")
-                .getMethod("doEffect", "(Lcom/wurmonline/server/skills/Skill;DLcom/wurmonline/server/creatures/Creature;IIII)V");
+    private void AddScornOfLibilaHook() throws Exception {
+        CtClass ctSpellClass = HookManager.getInstance().getClassPool().get("com.wurmonline.server.spells.ScornOfLibila");
+        HookManager.getInstance().addCallback(ctSpellClass, "zonedMap", map);
+        HookManager.getInstance().addCallback(ctSpellClass, "zonedPve", this);
+        CtMethod doEffectMethod = ctSpellClass.getMethod("doEffect", "(Lcom/wurmonline/server/skills/Skill;DLcom/wurmonline/server/creatures/Creature;IIII)V");
+        doEffectMethod.insertBefore("{if (zonedMap.isPve($3)) zonedPve.alertPve($3, true);}");
         doEffectMethod.instrument(new ExprEditor() {
             @Override
             public void edit(MethodCall m) throws CannotCompileException {
                 if (m.getMethodName().equals("addWoundOfType")) {
-                    m.replace("{ if(!net.ildar.wurm.ZonedPVE.getMap().isPve($0)) $_ = $proceed($$); }");
+                    if (debugMode)
+                        logger.info("Recompiling addWoundOfType inside Scorn of Libila");
+                    m.replace("{ if(!zonedMap.isPve($0)) $_ = $proceed($$); }");
                 }
             }
         });
     }
 
-    private void AddRiteOfDeathHook() throws Exception{
-        CtMethod doEffectMethod = HookManager.getInstance().getClassPool().get("com.wurmonline.server.spells.RiteDeath")
-                .getMethod("doEffect", "(Lcom/wurmonline/server/skills/Skill;DLcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/items/Item;)V");
+    private void AddRiteOfDeathHook() throws Exception {
+        CtClass ctSpellClass = HookManager.getInstance().getClassPool().get("com.wurmonline.server.spells.RiteDeath");
+        HookManager.getInstance().addCallback(ctSpellClass, "zoneMap", map);
+        CtMethod doEffectMethod = ctSpellClass.getMethod("doEffect", "(Lcom/wurmonline/server/skills/Skill;DLcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/items/Item;)V");
         doEffectMethod.instrument(new ExprEditor() {
             @Override
             public void edit(MethodCall m) throws CannotCompileException {
                 if (m.getMethodName().equals("addWoundOfType")) {
-                    m.replace("{ if(!net.ildar.wurm.ZonedPVE.getMap().isPve($0)) $_ = $proceed($$); }");
+                    if (debugMode)
+                        logger.info("Recompiling addWoundOfType inside Rite of Death");
+                    m.replace("{ if(!zoneMap.isPve($0)) $_ = $proceed($$); }");
                 }
             }
         });
     }
 
     private void AddSpellHooks() {
-        for(Spell spell : Spell.values()) {
+        for (Spell spell : Spell.values()) {
             String className = "com.wurmonline.server.spells." + spell.name();
             if (spell.withPrecondition)
                 HookManager.getInstance().registerHook(className,
@@ -206,13 +238,14 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
     public void onServerStarted() {
         try {
             map.validate();
+            logger.info(map.toString());
         } catch (Exception e) {
             logger.log(Level.SEVERE, "Invalid map", e);
         }
     }
 
     @SuppressWarnings("unused")
-    public enum Spell{
+    public enum Spell {
         DrainHealth(false, "(Lcom/wurmonline/server/skills/Skill;DLcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/creatures/Creature;)V"),
         DrainStamina(true, "(Lcom/wurmonline/server/skills/Skill;Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/creatures/Creature;)Z"),
         FirePillar(true, "(Lcom/wurmonline/server/skills/Skill;Lcom/wurmonline/server/creatures/Creature;III)Z"),
@@ -228,7 +261,6 @@ public class ZonedPVE implements WurmServerMod, Initable, Configurable, ServerSt
         Weakness(true, "(Lcom/wurmonline/server/skills/Skill;Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/creatures/Creature;)Z"),
         WormBrains(true, "(Lcom/wurmonline/server/skills/Skill;Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/creatures/Creature;)Z"),
         WrathMagranon(false, "(Lcom/wurmonline/server/skills/Skill;DLcom/wurmonline/server/creatures/Creature;IIII)V"),
-        ScornOfLibila(false, "(Lcom/wurmonline/server/skills/Skill;DLcom/wurmonline/server/creatures/Creature;IIII)V"),
         RiteDeath(true, "(Lcom/wurmonline/server/skills/Skill;Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/items/Item;)Z");
 
         public boolean withPrecondition;
