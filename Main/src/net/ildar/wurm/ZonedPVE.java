@@ -9,10 +9,7 @@ import javassist.CtMethod;
 import javassist.expr.ExprEditor;
 import javassist.expr.MethodCall;
 import org.gotti.wurmunlimited.modloader.classhooks.HookManager;
-import org.gotti.wurmunlimited.modloader.interfaces.Configurable;
-import org.gotti.wurmunlimited.modloader.interfaces.PreInitable;
-import org.gotti.wurmunlimited.modloader.interfaces.ServerStartedListener;
-import org.gotti.wurmunlimited.modloader.interfaces.WurmServerMod;
+import org.gotti.wurmunlimited.modloader.interfaces.*;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -22,7 +19,7 @@ import java.util.Properties;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public class ZonedPVE implements WurmServerMod, PreInitable, Configurable, ServerStartedListener {
+public class ZonedPVE implements WurmServerMod, PreInitable, Initable, Configurable, ServerStartedListener {
     private static final String VERSION = "1.0";
     static boolean debugMode;
     static final Logger logger = Logger.getLogger(ZonedPVE.class.getSimpleName());
@@ -38,21 +35,28 @@ public class ZonedPVE implements WurmServerMod, PreInitable, Configurable, Serve
         }
     }
 
+    @Override
+    public void init() {
+        try {
+            addSpellHooks();
+            addCombatEngineHook();
+            addArcheryHook();
+            addCatapultHook();
+        } catch (Exception e) {
+            logger.log(Level.SEVERE, "Couldn't initialize the mod", e);
+        }
+    }
 
     @Override
     public void preInit() {
         try {
             BufferedImage img = ImageIO.read(new File("./mods/" + ZonedPVE.class.getSimpleName() + "/map.bmp"));
             map.setMap(img);
-            AddCombatEngineHook();
-            AddArcheryHook();
-            AddSpellHooks();
-            AddRiteOfDeathHook();
-            AddScornOfLibilaHook();
-            AddCatapultHook();
+            processRiteOfDeathSpell();
+            processScornOfLibilaSpell();
             logger.info("Initialization is complete");
         } catch (Exception e) {
-            logger.log(Level.SEVERE, "Couldn't initialize the mod", e);
+            logger.log(Level.SEVERE, "Couldn't preinitialize the mod", e);
         }
     }
 
@@ -64,7 +68,7 @@ public class ZonedPVE implements WurmServerMod, PreInitable, Configurable, Serve
             creature.getCommunicator().sendAlertServerMessage("The target is in PvE zone");
     }
 
-    private void AddCatapultHook() {
+    private void addCatapultHook() {
         HookManager.getInstance().registerHook("com.wurmonline.server.behaviours.WarmachineBehaviour",
                 "fireCatapult",
                 "(Lcom/wurmonline/server/behaviours/Action;Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/items/Item;)V",
@@ -109,7 +113,7 @@ public class ZonedPVE implements WurmServerMod, PreInitable, Configurable, Serve
                 })));
     }
 
-    private void AddScornOfLibilaHook() throws Exception {
+    private void processScornOfLibilaSpell() throws Exception {
         CtClass ctSpellClass = HookManager.getInstance().getClassPool().get("com.wurmonline.server.spells.ScornOfLibila");
         HookManager.getInstance().addCallback(ctSpellClass, "zonedMap", map);
         HookManager.getInstance().addCallback(ctSpellClass, "zonedPve", this);
@@ -127,7 +131,7 @@ public class ZonedPVE implements WurmServerMod, PreInitable, Configurable, Serve
         });
     }
 
-    private void AddRiteOfDeathHook() throws Exception {
+    private void processRiteOfDeathSpell() throws Exception {
         CtClass ctSpellClass = HookManager.getInstance().getClassPool().get("com.wurmonline.server.spells.RiteDeath");
         HookManager.getInstance().addCallback(ctSpellClass, "zoneMap", map);
         CtMethod doEffectMethod = ctSpellClass.getMethod("doEffect", "(Lcom/wurmonline/server/skills/Skill;DLcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/items/Item;)V");
@@ -143,7 +147,7 @@ public class ZonedPVE implements WurmServerMod, PreInitable, Configurable, Serve
         });
     }
 
-    private void AddSpellHooks() {
+    private void addSpellHooks() {
         for (Spell spell : Spell.values()) {
             String className = "com.wurmonline.server.spells." + spell.name();
             if (spell.withPrecondition)
@@ -186,7 +190,7 @@ public class ZonedPVE implements WurmServerMod, PreInitable, Configurable, Serve
         }
     }
 
-    private void AddArcheryHook() {
+    private void addArcheryHook() {
         HookManager.getInstance().registerHook("com.wurmonline.server.combat.Archery",
                 "attack",
                 "(Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/items/Item;FLcom/wurmonline/server/behaviours/Action;)Z",
@@ -205,7 +209,7 @@ public class ZonedPVE implements WurmServerMod, PreInitable, Configurable, Serve
                 }));
     }
 
-    private void AddCombatEngineHook() {
+    private void addCombatEngineHook() {
         HookManager.getInstance().registerHook("com.wurmonline.server.combat.CombatEngine",
                 "attack",
                 "(Lcom/wurmonline/server/creatures/Creature;Lcom/wurmonline/server/creatures/Creature;IILcom/wurmonline/server/behaviours/Action;)Z",
@@ -238,7 +242,6 @@ public class ZonedPVE implements WurmServerMod, PreInitable, Configurable, Serve
     public void onServerStarted() {
         try {
             map.validate();
-            logger.info(map.toString());
         } catch (Exception e) {
             logger.log(Level.SEVERE, "Invalid map", e);
         }
